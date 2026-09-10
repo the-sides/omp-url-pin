@@ -1,0 +1,39 @@
+{
+	"$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+	"name": "url-pin",
+	"owner": {
+		"name": "the-sides",
+		"email": "the-sides@users.noreply.github.com"
+	},
+	"metadata": {
+		"description": "url-pin for omp: rank the URLs a session mentions and open the busiest one with Cmd+B",
+		"version": "0.1.0"
+	},
+	"plugins": [
+		{
+			"name": "url-pin",
+			"description": "Counts the http(s) URLs a session mentions, ranks them per origin, shows the winning port as a status-line chip, and opens it in the external browser with Cmd+B / Ctrl+B.",
+			"source": {
+				"source": "github",
+				"repo": "the-sides/omp-url-pin",
+				"ref": "main"
+			},
+			"version": "0.1.0",
+			"author": {
+				"name": "the-sides",
+				"email": "the-sides@users.noreply.github.com"
+			},
+			"homepage": "https://github.com/the-sides/omp-url-pin#readme",
+			"repository": "https://github.com/the-sides/omp-url-pin.git",
+			"license": "MIT",
+			"category": "productivity",
+			"keywords": ["urls", "browser", "status-line", "ports", "worktrees"],
+			"commands": [
+				{
+					"name": "urls",
+					"description": "Pick a URL seen this session and open it; pin | unpin | clear"
+				}
+			]
+		}
+	]
+}

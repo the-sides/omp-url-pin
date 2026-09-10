@@ -12,11 +12,26 @@ Every session leaks URLs — a Vite banner, a `curl` you ran, a preview link the
 
 ## Install
 
+From npm:
+
 ```sh
-omp plugin link ~/repos/omp-url-pin
+omp plugin install omp-url-pin
 ```
 
-Restart omp (or `/reload`). No build step, no dependencies.
+Or from the marketplace catalog this repo ships:
+
+```sh
+omp plugin marketplace add the-sides/omp-url-pin
+omp plugin install url-pin@url-pin
+```
+
+Or from a clone, for hacking on it:
+
+```sh
+omp plugin link /path/to/omp-url-pin
+```
+
+Restart omp (or `/reload`). No build step, no dependencies — the extension is a single TypeScript file the host loads directly.
 
 ## How the ranking works
 

@@ -1,17 +1,29 @@
 {
 	"name": "omp-url-pin",
 	"version": "0.1.0",
-	"description": "Rank the URLs a session mentions and open the busiest one with Cmd+B — for juggling dev-server ports across omp sessions",
+	"description": "Rank the URLs an omp session mentions and open the busiest one with Cmd+B — for juggling dev-server ports across sessions",
 	"license": "MIT",
+	"author": {
+		"name": "the-sides",
+		"email": "the-sides@users.noreply.github.com"
+	},
+	"homepage": "https://github.com/the-sides/omp-url-pin#readme",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/the-sides/omp-url-pin.git"
+	},
+	"bugs": {
+		"url": "https://github.com/the-sides/omp-url-pin/issues"
+	},
 	"type": "module",
-	"keywords": ["omp-plugin", "omp-extension", "pi-package", "pi-extension", "urls", "browser"],
+	"keywords": ["omp-plugin", "omp-extension", "pi-package", "pi-extension", "urls", "browser", "status-line", "ports"],
 	"omp": {
 		"extensions": ["./src/url-pin.ts"]
 	},
 	"pi": {
 		"extensions": ["./src/url-pin.ts"]
 	},
-	"files": ["src", "README.md"],
+	"files": ["src", "README.md", "LICENSE"],
 	"scripts": {
 		"test": "bun test"
 	}
