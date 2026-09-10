@@ -1,0 +1,18 @@
+{
+	"name": "omp-url-pin",
+	"version": "0.1.0",
+	"description": "Rank the URLs a session mentions and open the busiest one with Cmd+B — for juggling dev-server ports across omp sessions",
+	"license": "MIT",
+	"type": "module",
+	"keywords": ["omp-plugin", "omp-extension", "pi-package", "pi-extension", "urls", "browser"],
+	"omp": {
+		"extensions": ["./src/url-pin.ts"]
+	},
+	"pi": {
+		"extensions": ["./src/url-pin.ts"]
+	},
+	"files": ["src", "README.md"],
+	"scripts": {
+		"test": "bun test"
+	}
+}
