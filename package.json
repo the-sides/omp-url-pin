@@ -1,6 +1,6 @@
 {
 	"name": "omp-url-pin",
-	"version": "0.1.0",
+	"version": "1.0.1",
 	"description": "Rank the URLs an omp session mentions and open the busiest one with Cmd+B — for juggling dev-server ports across sessions",
 	"license": "MIT",
 	"author": {

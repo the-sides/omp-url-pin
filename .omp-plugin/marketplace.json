@@ -7,7 +7,7 @@
 	},
 	"metadata": {
 		"description": "url-pin for omp: rank the URLs a session mentions and open the busiest one with Cmd+B",
-		"version": "0.1.0"
+		"version": "1.0.1"
 	},
 	"plugins": [
 		{
@@ -18,7 +18,7 @@
 				"repo": "the-sides/omp-url-pin",
 				"ref": "main"
 			},
-			"version": "0.1.0",
+			"version": "1.0.1",
 			"author": {
 				"name": "the-sides",
 				"email": "the-sides@users.noreply.github.com"

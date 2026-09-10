@@ -212,6 +212,45 @@ test("a pin outranks frequency and survives a branch replay", async () => {
 	expect(opened()).toBe("http://localhost:5173");
 });
 
+test("`/urls pin` pins whatever is selected in the list", async () => {
+	branch = [
+		message({
+			role: "assistant",
+			content: [{ type: "text", text: "http://localhost:5173 http://localhost:5173 http://localhost:4300" }],
+		}),
+	];
+	await fire("session_start");
+
+	pick = 1; // second row of the ranked list, not the ⌘B default
+	await commands.urls("pin", ctx);
+
+	expect(options[0].label).toContain("http://localhost:5173");
+	expect(status()).toBe("\uf08d 4300");
+	await shortcuts["ctrl+b"](ctx);
+	expect(opened()).toBe("http://localhost:4300");
+
+	// Selecting from the pin list must not also open a browser tab.
+	expect(execCalls).toHaveLength(1);
+
+	// The pin now leads the list and is marked; the plain picker opens rather than pins.
+	pick = 1;
+	await commands.urls("", ctx);
+	expect(options[0].label).toContain("\uf08d");
+	expect(opened()).toBe("http://localhost:5173");
+	expect(status()).toBe("\uf08d 4300");
+});
+
+test("cancelling the pin list leaves the pin untouched", async () => {
+	branch = [message({ role: "assistant", content: [{ type: "text", text: "http://localhost:5173" }] })];
+	await fire("session_start");
+
+	pick = 99; // nothing selected — Esc
+	await commands.urls("pin", ctx);
+
+	expect(appended).toHaveLength(0);
+	expect(status()).toBe("\uf0ac 5173");
+});
+
 test("a symbol preset with no globe falls back to a colon", async () => {
 	symbols = {}; // the `ascii` preset ships no `cmd.globe`
 	branch = [message({ role: "assistant", content: [{ type: "text", text: "http://localhost:5173" }] })];

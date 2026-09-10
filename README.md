@@ -6,8 +6,8 @@ Every session leaks URLs — a Vite banner, a `curl` you ran, a preview link the
 
 - **Cmd+B** (`super+b`) or **Ctrl+B** — open the busiest URL of this session in the external browser.
 - Status chip — a globe followed by the port (`🌐 5173`), or a pin glyph when pinned. The marker is taken from the active `symbolPreset`, so it renders as a Nerd Font glyph, an emoji, or `:` under `ascii` — matching its neighbouring segments instead of hardcoding a font the terminal may lack.
-- `/urls` — picker of every URL seen, ranked, `Enter` opens the selection.
-- `/urls pin [n|url]` / `/urls unpin` — force a target regardless of frequency; the pin is stored in the session, so it survives resume, branch, and reload.
+- `/urls` — picker of every URL seen, ranked; `Enter` opens the selection.
+- `/urls pin` — the same list, where `Enter` pins the selection instead of opening it. `/urls pin 3` and `/urls pin <url>` skip the picker; `/urls unpin` releases. A pin outranks frequency, is marked in both lists, and is stored in the session, so it survives resume, branch, and reload.
 - `/urls clear` — drop the ranking and start counting again.
 
 ## Install

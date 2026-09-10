@@ -16,7 +16,7 @@
  * Commands: /urls (picker → open), /urls pin [n|url], /urls unpin, /urls clear
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 const PIN_ENTRY = "com.oh-my-pi.url-pin.pin";
 const STATUS_KEY = "url-pin";
@@ -271,6 +271,37 @@ export default function urlPin(pi: ExtensionAPI): void {
 		});
 	}
 
+	/**
+	 * Show the ranked list and return the chosen URL.
+	 *
+	 * The rows carry their rank number so `/urls pin 3` and the picker agree, and
+	 * the current pin is marked with the theme's pin glyph.
+	 */
+	async function pickUrl(ctx: ExtensionCommandContext, title: string): Promise<Hit | undefined> {
+		const rows = ranked();
+		if (rows.length === 0) {
+			ctx.ui.notify("url-pin: no URL seen in this session yet", "warning");
+			return undefined;
+		}
+		const pinGlyph = ctx.ui.theme.symbol("icon.pin").trim() || "*";
+		const rowByLabel = new Map<string, Hit>();
+		const options = rows.map((hit, i) => {
+			const label = `${i + 1}. ${hit.url === pinned ? `${pinGlyph} ` : ""}${hit.url}`;
+			rowByLabel.set(label, hit);
+			const origin = originCounts.get(hit.origin) ?? hit.count;
+			return { label, description: origin === hit.count ? `seen ${hit.count}×` : `seen ${hit.count}× · origin ${origin}×` };
+		});
+		const picked = await ctx.ui.select(title, options);
+		return picked === undefined ? undefined : rowByLabel.get(picked);
+	}
+
+	function remember(hit: ParsedUrl): void {
+		if (hits.has(hit.url)) return;
+		seq += 1;
+		originCounts.set(hit.origin, (originCounts.get(hit.origin) ?? 0) + 1);
+		hits.set(hit.url, { url: hit.url, origin: hit.origin, label: hit.label, count: 1, last: seq });
+	}
+
 	pi.registerCommand("urls", {
 		description: "URLs seen this session — pick one to open (pin | unpin | clear)",
 		getArgumentCompletions: (prefix) => {
@@ -291,39 +322,28 @@ export default function urlPin(pi: ExtensionAPI): void {
 			}
 
 			refresh(ctx);
-			const rows = ranked();
 
 			if (verb === "pin") {
-				const index = operand === undefined ? 1 : Number.parseInt(operand, 10);
-				const chosen = Number.isFinite(index) ? rows[index - 1] : parse(operand ?? "");
-				if (!chosen) {
-					ctx.ui.notify(operand ? `url-pin: cannot pin "${operand}"` : "url-pin: nothing to pin yet", "error");
+				// Bare `/urls pin` pins whatever you select from the list; an operand
+				// (rank number or URL) skips the picker for scripted/keyboard use.
+				if (operand === undefined) {
+					const chosen = await pickUrl(ctx, "Pin URL for ⌘B");
+					if (chosen) setPin(ctx, chosen.url);
 					return;
 				}
-				if (!hits.has(chosen.url)) {
-					seq += 1;
-					originCounts.set(chosen.origin, (originCounts.get(chosen.origin) ?? 0) + 1);
-					hits.set(chosen.url, { url: chosen.url, origin: chosen.origin, label: chosen.label, count: 1, last: seq });
+				const index = Number.parseInt(operand, 10);
+				const chosen = Number.isFinite(index) ? ranked()[index - 1] : parse(operand);
+				if (!chosen) {
+					ctx.ui.notify(`url-pin: cannot pin "${operand}"`, "error");
+					return;
 				}
+				remember(chosen);
 				setPin(ctx, chosen.url);
 				return;
 			}
 
-			if (rows.length === 0) {
-				ctx.ui.notify("url-pin: no URL seen in this session yet", "warning");
-				return;
-			}
-			const urlByLabel = new Map<string, string>();
-			const options = rows.map((hit, i) => {
-				const label = `${i + 1}. ${hit.url === pinned ? "📌 " : ""}${hit.url}`;
-				urlByLabel.set(label, hit.url);
-				const origin = originCounts.get(hit.origin) ?? hit.count;
-				return { label, description: origin === hit.count ? `seen ${hit.count}×` : `seen ${hit.count}× · origin ${origin}×` };
-			});
-			const picked = await ctx.ui.select("Open URL (⌘B opens the first)", options);
-			if (!picked) return;
-			const url = urlByLabel.get(picked);
-			if (url) await openUrl(ctx, url);
+			const chosen = await pickUrl(ctx, "Open URL (⌘B opens the first)");
+			if (chosen) await openUrl(ctx, chosen.url);
 		},
 	});
 }
