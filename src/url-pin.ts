@@ -187,8 +187,12 @@ export default function urlPin(pi: ExtensionAPI): void {
 			return;
 		}
 		// One powerline chip's worth of text: the port is the only part that
-		// disambiguates sibling worktrees, so that is all the chip carries.
-		ctx.ui.setStatus(STATUS_KEY, top.url === pinned ? `📌 ${top.label}` : top.label);
+		// disambiguates sibling worktrees, so that is all the chip carries. The
+		// marker comes from the active symbol preset (nerd glyph, emoji, or
+		// nothing under ascii — hence the ":" fallback) so the chip matches its
+		// neighbours instead of hardcoding a font the terminal may not have.
+		const glyph = ctx.ui.theme.symbol(top.url === pinned ? "icon.pin" : "cmd.globe").trim();
+		ctx.ui.setStatus(STATUS_KEY, `${glyph.length > 0 ? glyph : ":"} ${top.label}`);
 	}
 
 	function refresh(ctx: ExtensionContext): void {

@@ -28,9 +28,11 @@ let ids: number;
 let ctx: unknown;
 
 let timers: { fn: () => void; delay: number }[];
+let symbols: Record<string, string>;
 
 function harness(): void {
 	timers = [];
+	symbols = { "cmd.globe": "\uf0ac", "icon.pin": "\uf08d" };
 	handlers = {};
 	shortcuts = {};
 	commands = {};
@@ -82,6 +84,7 @@ function harness(): void {
 				options = offered;
 				return offered[pick]?.label;
 			},
+			theme: { symbol: (key: string) => symbols[key] ?? "" },
 		},
 	};
 
@@ -117,7 +120,7 @@ test("counts chat and tool output, ignores file content", async () => {
 	];
 	await fire("session_start");
 
-	expect(status()).toBe("5173");
+	expect(status()).toBe("\uf0ac 5173");
 	pick = 0;
 	await commands.urls("", ctx);
 	expect(options.some((option) => option.label.includes("docs.example.com"))).toBe(false);
@@ -146,7 +149,7 @@ test("paths of one origin reinforce that origin instead of splitting it", async 
 	await fire("session_start");
 
 	// :9999/a ties :5173/health on per-URL count, but :5173 is the busier origin.
-	expect(status()).toBe("5173");
+	expect(status()).toBe("\uf0ac 5173");
 	await shortcuts["ctrl+b"](ctx);
 	expect(opened()).toBe("http://localhost:5173/health");
 
@@ -167,7 +170,7 @@ test("user-run bash output is counted once it lands, with no tool_result to anno
 	);
 	flushTimers();
 
-	expect(status()).toBe("4300");
+	expect(status()).toBe("\uf0ac 4300");
 	await shortcuts["super+b"](ctx);
 	expect(opened()).toBe("http://localhost:4300/admin");
 });
@@ -195,7 +198,7 @@ test("a pin outranks frequency and survives a branch replay", async () => {
 	await fire("session_start");
 	await commands.urls("pin http://localhost:4300", ctx);
 
-	expect(status()).toBe("📌 4300");
+	expect(status()).toBe("\uf08d 4300");
 	await shortcuts["ctrl+b"](ctx);
 	expect(opened()).toBe("http://localhost:4300");
 	expect(appended).toHaveLength(1);
@@ -207,6 +210,14 @@ test("a pin outranks frequency and survives a branch replay", async () => {
 	await commands.urls("unpin", ctx);
 	await shortcuts["ctrl+b"](ctx);
 	expect(opened()).toBe("http://localhost:5173");
+});
+
+test("a symbol preset with no globe falls back to a colon", async () => {
+	symbols = {}; // the `ascii` preset ships no `cmd.globe`
+	branch = [message({ role: "assistant", content: [{ type: "text", text: "http://localhost:5173" }] })];
+	await fire("session_start");
+
+	expect(status()).toBe(": 5173");
 });
 
 test("an empty session warns instead of opening something stale", async () => {
