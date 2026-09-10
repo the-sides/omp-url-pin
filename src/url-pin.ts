@@ -39,10 +39,15 @@ const CONTENT_TOOLS: Record<string, true> = {
 const URL_RE = /https?:\/\/[^\s<>"'`\\|]+/gi;
 const TRAILING_PUNCT = /[.,;:!?'"`*_~>\]}]+$/;
 
+/** Re-sync delays after a user-run `!bash`/`$python`, whose output lands with no event. */
+const USER_COMMAND_RESYNC_MS = [500, 3000];
+
 interface Hit {
 	url: string;
 	/** `protocol//host`, the unit the ranking actually competes on. */
 	origin: string;
+	/** Status-chip text: the port when the URL has one, else the hostname. */
+	label: string;
 	count: number;
 	/** Ingest order, used to break count ties toward the freshest URL. */
 	last: number;
@@ -51,6 +56,7 @@ interface Hit {
 interface ParsedUrl {
 	url: string;
 	origin: string;
+	label: string;
 }
 
 function parse(raw: string): ParsedUrl | undefined {
@@ -66,7 +72,7 @@ function parse(raw: string): ParsedUrl | undefined {
 		if (!parsed.hostname) return undefined;
 		const origin = `${parsed.protocol}//${parsed.host}`;
 		const path = parsed.pathname === "/" ? "" : parsed.pathname;
-		return { url: `${origin}${path}${parsed.search}${parsed.hash}`, origin };
+		return { url: `${origin}${path}${parsed.search}${parsed.hash}`, origin, label: parsed.port || parsed.hostname };
 	} catch {
 		return undefined;
 	}
@@ -97,7 +103,7 @@ export default function urlPin(pi: ExtensionAPI): void {
 				existing.count += 1;
 				existing.last = seq;
 			} else {
-				hits.set(parsed.url, { url: parsed.url, origin: parsed.origin, count: 1, last: seq });
+				hits.set(parsed.url, { url: parsed.url, origin: parsed.origin, label: parsed.label, count: 1, last: seq });
 			}
 		}
 	}
@@ -180,8 +186,9 @@ export default function urlPin(pi: ExtensionAPI): void {
 			ctx.ui.setStatus(STATUS_KEY, undefined);
 			return;
 		}
-		const host = top.origin.replace(/^https?:\/\//, "");
-		ctx.ui.setStatus(STATUS_KEY, top.url === pinned ? `📌 ${host}` : `⌘B ${host} ×${originCounts.get(top.origin) ?? top.count}`);
+		// One powerline chip's worth of text: the port is the only part that
+		// disambiguates sibling worktrees, so that is all the chip carries.
+		ctx.ui.setStatus(STATUS_KEY, top.url === pinned ? `📌 ${top.label}` : top.label);
 	}
 
 	function refresh(ctx: ExtensionContext): void {
@@ -239,8 +246,18 @@ export default function urlPin(pi: ExtensionAPI): void {
 			forget(ctx);
 		});
 	}
-	for (const event of ["input", "message_end", "tool_result", "user_bash", "user_python"] as const) {
+	for (const event of ["input", "message_end", "tool_result"] as const) {
 		pi.on(event, (_payload, ctx) => refresh(ctx));
+	}
+	// `user_bash`/`user_python` fire *before* the command runs, and its output is
+	// appended to the session with no completion event of its own. Re-sync on a
+	// managed timer so the chip catches a `!npm run dev` banner without waiting
+	// for the next prompt; the shortcut re-syncs on press regardless.
+	for (const event of ["user_bash", "user_python"] as const) {
+		pi.on(event, (_payload, ctx) => {
+			refresh(ctx);
+			for (const delay of USER_COMMAND_RESYNC_MS) ctx.setTimeout(() => refresh(ctx), delay);
+		});
 	}
 
 	for (const shortcut of ["super+b", "ctrl+b"] as const) {
@@ -282,7 +299,7 @@ export default function urlPin(pi: ExtensionAPI): void {
 				if (!hits.has(chosen.url)) {
 					seq += 1;
 					originCounts.set(chosen.origin, (originCounts.get(chosen.origin) ?? 0) + 1);
-					hits.set(chosen.url, { url: chosen.url, origin: chosen.origin, count: 1, last: seq });
+					hits.set(chosen.url, { url: chosen.url, origin: chosen.origin, label: chosen.label, count: 1, last: seq });
 				}
 				setPin(ctx, chosen.url);
 				return;

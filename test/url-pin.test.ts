@@ -27,7 +27,10 @@ let pick: number;
 let ids: number;
 let ctx: unknown;
 
+let timers: { fn: () => void; delay: number }[];
+
 function harness(): void {
+	timers = [];
 	handlers = {};
 	shortcuts = {};
 	commands = {};
@@ -64,6 +67,10 @@ function harness(): void {
 	ctx = {
 		hasUI: true,
 		sessionManager: { getBranch: () => branch },
+		setTimeout(fn: () => void, delay: number) {
+			timers.push({ fn, delay });
+			return timers.length;
+		},
 		ui: {
 			setStatus(_key: string, text: string | undefined) {
 				statuses.push(text);
@@ -90,6 +97,12 @@ async function fire(event: string): Promise<void> {
 	for (const handler of handlers[event] ?? []) await handler({}, ctx);
 }
 
+/** Run every callback url-pin scheduled through the host's managed timers. */
+function flushTimers(): void {
+	const scheduled = timers.splice(0, timers.length);
+	for (const timer of scheduled) timer.fn();
+}
+
 beforeEach(harness);
 
 test("counts chat and tool output, ignores file content", async () => {
@@ -104,7 +117,7 @@ test("counts chat and tool output, ignores file content", async () => {
 	];
 	await fire("session_start");
 
-	expect(status()).toBe("⌘B localhost:5173 ×2");
+	expect(status()).toBe("5173");
 	pick = 0;
 	await commands.urls("", ctx);
 	expect(options.some((option) => option.label.includes("docs.example.com"))).toBe(false);
@@ -116,7 +129,10 @@ test("re-reading the branch does not double count", async () => {
 	await fire("message_end");
 	await fire("tool_result");
 
-	expect(status()).toBe("⌘B localhost:5173 ×1");
+	pick = 0;
+	await commands.urls("", ctx);
+	expect(options).toHaveLength(1);
+	expect(options[0].description).toBe("seen 1×");
 });
 
 test("paths of one origin reinforce that origin instead of splitting it", async () => {
@@ -130,19 +146,28 @@ test("paths of one origin reinforce that origin instead of splitting it", async 
 	await fire("session_start");
 
 	// :9999/a ties :5173/health on per-URL count, but :5173 is the busier origin.
-	expect(status()).toBe("⌘B localhost:5173 ×3");
+	expect(status()).toBe("5173");
 	await shortcuts["ctrl+b"](ctx);
 	expect(opened()).toBe("http://localhost:5173/health");
+
+	pick = 0;
+	await commands.urls("", ctx);
+	expect(options[0].description).toBe("seen 2× · origin 3×");
+	expect(options.at(-1)?.description).toBe("seen 2×");
 });
 
-test("user-run bash output is counted even though it fires no tool_result", async () => {
+test("user-run bash output is counted once it lands, with no tool_result to announce it", async () => {
 	await fire("session_start");
+	// `user_bash` fires before the command runs, so nothing is countable yet.
+	await fire("user_bash");
+	expect(status()).toBeUndefined();
+
 	branch.push(
 		message({ role: "bashExecution", command: "npm run dev -- --port 4300", output: "ready on http://localhost:4300/admin" }),
 	);
-	await fire("user_bash");
+	flushTimers();
 
-	expect(status()).toBe("⌘B localhost:4300 ×1");
+	expect(status()).toBe("4300");
 	await shortcuts["super+b"](ctx);
 	expect(opened()).toBe("http://localhost:4300/admin");
 });
@@ -170,7 +195,7 @@ test("a pin outranks frequency and survives a branch replay", async () => {
 	await fire("session_start");
 	await commands.urls("pin http://localhost:4300", ctx);
 
-	expect(status()).toBe("📌 localhost:4300");
+	expect(status()).toBe("📌 4300");
 	await shortcuts["ctrl+b"](ctx);
 	expect(opened()).toBe("http://localhost:4300");
 	expect(appended).toHaveLength(1);
