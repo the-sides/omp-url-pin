@@ -18,6 +18,28 @@ interface Option {
 	description?: string;
 }
 
+class FakeSelectorComponent {
+	constructor(
+		_title: string,
+		offered: Option[],
+		private readonly onSelect: (label: string) => void,
+		private readonly onCancel: () => void,
+		private readonly selectorOptions?: { onRight?: () => void },
+	) {
+		options = offered;
+	}
+
+	handleInput(input: string): void {
+		if (input === "right") {
+			this.selectorOptions?.onRight?.();
+			return;
+		}
+		const selected = options[pick]?.label;
+		if (selected) this.onSelect(selected);
+		else this.onCancel();
+	}
+}
+
 let handlers: Record<string, ((event: unknown, ctx: unknown) => unknown)[]>;
 let shortcuts: Record<string, (ctx: unknown) => unknown>;
 let commands: Record<string, (args: string, ctx: unknown) => Promise<void>>;
@@ -28,6 +50,7 @@ let appended: { type: string; data: unknown }[];
 let branch: FakeEntry[];
 let options: Option[];
 let pick: number;
+let pickerInput: "enter" | "right";
 let ids: number;
 let ctx: unknown;
 let agentDir: string;
@@ -50,11 +73,12 @@ function harness(): void {
 	branch = [];
 	options = [];
 	pick = 0;
+	pickerInput = "enter";
 	ids = 0;
 
 	const pi = {
 		setLabel() {},
-		pi: { getAgentDir: () => agentDir },
+		pi: { getAgentDir: () => agentDir, ExtensionSelectorComponent: FakeSelectorComponent },
 		on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
 			(handlers[event] ??= []).push(handler);
 		},
@@ -96,6 +120,21 @@ function harness(): void {
 				options = offered;
 				return offered[pick]?.label;
 			},
+			async custom<T>(
+				factory: (
+					tui: unknown,
+					theme: unknown,
+					keybindings: unknown,
+					done: (result: T) => void,
+				) => { handleInput?: (input: string) => void } | Promise<{ handleInput?: (input: string) => void }>,
+			): Promise<T | undefined> {
+				let result: T | undefined;
+				const component = await factory({}, {}, {}, (selected) => {
+					result = selected;
+				});
+				component.handleInput?.(pickerInput === "right" ? "right" : "\r");
+				return result;
+			},
 			theme: { symbol: (key: string) => symbols[key] ?? "" },
 		},
 	};
@@ -127,6 +166,11 @@ beforeEach(() => {
 
 afterEach(() => rmSync(agentDir, { recursive: true, force: true }));
 
+test("registers Cmd+B without claiming Ctrl+B", () => {
+	expect(typeof shortcuts["super+b"]).toBe("function");
+	expect(shortcuts["ctrl+b"]).toBeUndefined();
+});
+
 test("counts chat and tool output, ignores file content", async () => {
 	branch = [
 		message({
@@ -143,6 +187,20 @@ test("counts chat and tool output, ignores file content", async () => {
 	pick = 0;
 	await commands.urls("", ctx);
 	expect(options.some((option) => option.label.includes("docs.example.com"))).toBe(false);
+});
+
+test("detects a schemeless host and port as HTTP", async () => {
+	branch = [
+		message({
+			role: "assistant",
+			content: [{ type: "text", text: "Dev server: localhost:3400/fleet/pm." }],
+		}),
+	];
+	await fire("session_start");
+
+	expect(status()).toBe("\uf0ac 3400");
+	await shortcuts["super+b"](ctx);
+	expect(opened()).toBe("http://localhost:3400/fleet/pm");
 });
 
 test("re-reading the branch does not double count", async () => {
@@ -169,7 +227,7 @@ test("paths of one origin reinforce that origin instead of splitting it", async 
 
 	// :9999/a ties :5173/health on per-URL count, but :5173 is the busier origin.
 	expect(status()).toBe("\uf0ac 5173");
-	await shortcuts["ctrl+b"](ctx);
+	await shortcuts["super+b"](ctx);
 	expect(opened()).toBe("http://localhost:5173/health");
 
 	pick = 0;
@@ -218,17 +276,28 @@ test("a pin outranks frequency and survives a branch replay", async () => {
 	await commands.urls("pin http://localhost:4300", ctx);
 
 	expect(status()).toBe("\uf08d 4300");
-	await shortcuts["ctrl+b"](ctx);
+	await shortcuts["super+b"](ctx);
 	expect(opened()).toBe("http://localhost:4300");
 	expect(appended).toHaveLength(1);
 
 	await fire("session_switch"); // resume/switch rebuilds from the branch
-	await shortcuts["ctrl+b"](ctx);
+	await shortcuts["super+b"](ctx);
 	expect(opened()).toBe("http://localhost:4300");
 
 	await commands.urls("unpin", ctx);
-	await shortcuts["ctrl+b"](ctx);
+	await shortcuts["super+b"](ctx);
 	expect(opened()).toBe("http://localhost:5173");
+});
+
+test("a schemeless pin is normalized and persisted", async () => {
+	await fire("session_start");
+	await commands.urls("pin localhost:3400", ctx);
+	expect(status()).toBe("\uf08d 3400");
+
+	harness();
+	await fire("session_start");
+	await shortcuts["super+b"](ctx);
+	expect(opened()).toBe("http://localhost:3400");
 });
 
 test("a path pin uses the leading URL origin and survives a new session", async () => {
@@ -240,12 +309,12 @@ test("a path pin uses the leading URL origin and survives a new session", async 
 	];
 	await fire("session_start");
 	await commands.urls("pin /fleet/pm", ctx);
-	await shortcuts["ctrl+b"](ctx);
+	await shortcuts["super+b"](ctx);
 	expect(opened()).toBe("http://localhost:5173/fleet/pm");
 
 	harness();
 	await fire("session_start");
-	await shortcuts["ctrl+b"](ctx);
+	await shortcuts["super+b"](ctx);
 	expect(status()).toBe("\uf08d 5173");
 	expect(opened()).toBe("http://localhost:5173/fleet/pm");
 });
@@ -258,7 +327,7 @@ test("opened and pinned URLs survive a new session on the same branch", async ()
 		}),
 	];
 	await fire("session_start");
-	await shortcuts["ctrl+b"](ctx);
+	await shortcuts["super+b"](ctx);
 	expect(opened()).toBe("http://localhost:5173/app");
 	await commands.urls("pin http://localhost:4300/admin", ctx);
 
@@ -275,7 +344,7 @@ test("opened and pinned URLs survive a new session on the same branch", async ()
 test("saved URLs are isolated by repository branch", async () => {
 	branch = [message({ role: "assistant", content: [{ type: "text", text: "http://localhost:5173/app" }] })];
 	await fire("session_start");
-	await shortcuts["ctrl+b"](ctx);
+	await shortcuts["super+b"](ctx);
 
 	branchName = "feature/another-worktree";
 	harness();
@@ -291,7 +360,7 @@ test("saved URLs are isolated by repository branch", async () => {
 test("clear removes both the live ranking and saved branch record", async () => {
 	branch = [message({ role: "assistant", content: [{ type: "text", text: "http://localhost:5173/app" }] })];
 	await fire("session_start");
-	await shortcuts["ctrl+b"](ctx);
+	await shortcuts["super+b"](ctx);
 
 	await commands.urls("clear", ctx);
 	expect(status()).toBeUndefined();
@@ -299,6 +368,30 @@ test("clear removes both the live ranking and saved branch record", async () => 
 	harness();
 	await fire("session_start");
 	expect(status()).toBeUndefined();
+});
+
+test("right arrow pins the highlighted URL from the normal menu", async () => {
+	branch = [
+		message({
+			role: "assistant",
+			content: [{ type: "text", text: "http://localhost:5173 http://localhost:5173 http://localhost:4300" }],
+		}),
+	];
+	await fire("session_start");
+
+	pick = 1;
+	pickerInput = "right";
+	await commands.urls("", ctx);
+
+	expect(options[1]?.label).toContain("http://localhost:4300");
+	expect(execCalls).toHaveLength(0);
+	expect(status()).toBe("\uf08d 4300");
+
+	harness();
+	await fire("session_start");
+	expect(status()).toBe("\uf08d 4300");
+	await shortcuts["super+b"](ctx);
+	expect(opened()).toBe("http://localhost:4300");
 });
 
 test("`/urls pin` pins whatever is selected in the list", async () => {
@@ -315,7 +408,7 @@ test("`/urls pin` pins whatever is selected in the list", async () => {
 
 	expect(options[0].label).toContain("http://localhost:5173");
 	expect(status()).toBe("\uf08d 4300");
-	await shortcuts["ctrl+b"](ctx);
+	await shortcuts["super+b"](ctx);
 	expect(opened()).toBe("http://localhost:4300");
 
 	// Selecting from the pin list must not also open a browser tab.
@@ -355,7 +448,7 @@ test("an empty session warns instead of opening something stale", async () => {
 	await fire("session_switch");
 
 	const before = execCalls.length;
-	await shortcuts["ctrl+b"](ctx);
+	await shortcuts["super+b"](ctx);
 	expect(execCalls).toHaveLength(before);
 	expect(notices.at(-1)).toContain("no URL seen");
 	expect(status()).toBeUndefined();

@@ -1,7 +1,7 @@
 /**
- * url-pin — track every http(s) URL that shows up in a session, rank by how
- * often its origin appears, and open the winner in the external browser with
- * Cmd+B (or Ctrl+B where the terminal keeps Cmd for itself).
+ * url-pin — track every http(s) URL or schemeless host:port that shows up in
+ * a session, rank by how often its origin appears, and open the winner in the
+ * external browser with Cmd+B.
  *
  * Counting reads the live session branch, deduplicated by entry id, so it sees
  * your prompts, assistant text, agent tool output, and your own `!bash` /
@@ -46,7 +46,10 @@ const CONTENT_TOOLS: Record<string, true> = {
 	learn: true,
 };
 
-const URL_RE = /https?:\/\/[^\s<>"'`\\|]+/gi;
+const URL_RE =
+	/https?:\/\/[^\s<>"'`\\|]+|(?<![a-z0-9_.-])(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|\[[0-9a-f:]+\]|(?:[a-z0-9-]+\.)+[a-z0-9-]+):\d{1,5}(?:[/?#][^\s<>"'`\\|]*)?/gi;
+const SCHEMELESS_URL_RE =
+	/^(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|\[[0-9a-f:]+\]|(?:[a-z0-9-]+\.)+[a-z0-9-]+):\d{1,5}(?:[/?#][^\s<>"'`\\|]*)?$/i;
 const TRAILING_PUNCT = /[.,;:!?'"`*_~>\]}]+$/;
 
 /** Re-sync delays after a user-run `!bash`/`$python`, whose output lands with no event. */
@@ -97,6 +100,7 @@ function parse(raw: string): ParsedUrl | undefined {
 		candidate = candidate.slice(0, -1);
 	}
 	if (candidate.length === 0) return undefined;
+	if (SCHEMELESS_URL_RE.test(candidate)) candidate = `http://${candidate}`;
 	try {
 		const parsed = new URL(candidate);
 		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
@@ -419,20 +423,23 @@ export default function urlPin(pi: ExtensionAPI): void {
 		});
 	}
 
-	for (const shortcut of ["super+b", "ctrl+b"] as const) {
-		pi.registerShortcut(shortcut, {
-			description: "Open the best URL for the current branch",
-			handler: (ctx) => openTop(ctx),
-		});
-	}
+	pi.registerShortcut("super+b", {
+		description: "Open the best URL for the current branch",
+		handler: (ctx) => openTop(ctx),
+	});
 
 	/**
-	 * Show the ranked list and return the chosen URL.
+	 * Show the ranked list and return both the chosen URL and requested action.
 	 *
-	 * The rows carry their rank number so `/urls pin 3` and the picker agree, and
-	 * the current pin is marked with the theme's pin glyph.
+	 * The rows carry their rank number so `/urls pin 3` and the picker agree.
+	 * In the normal `/urls` picker, right arrow confirms the highlighted row as
+	 * a pin; Enter confirms it as an open.
 	 */
-	async function pickUrl(ctx: ExtensionCommandContext, title: string): Promise<Hit | undefined> {
+	async function pickUrl(
+		ctx: ExtensionCommandContext,
+		title: string,
+		allowRightArrowPin = false,
+	): Promise<{ hit: Hit; pin: boolean } | undefined> {
 		const rows = ranked();
 		if (rows.length === 0) {
 			ctx.ui.notify("url-pin: no URL seen in this session or saved for this branch", "warning");
@@ -446,8 +453,32 @@ export default function urlPin(pi: ExtensionAPI): void {
 			const origin = originCounts.get(hit.origin) ?? hit.count;
 			return { label, description: origin === hit.count ? `seen ${hit.count}×` : `seen ${hit.count}× · origin ${origin}×` };
 		});
-		const picked = await ctx.ui.select(title, options);
-		return picked === undefined ? undefined : rowByLabel.get(picked);
+		if (allowRightArrowPin) {
+			const selected = await ctx.ui.custom<{ label: string; pin: boolean } | undefined>((tui, _theme, _keybindings, done) => {
+				let pinRequested = false;
+				let selector: InstanceType<typeof pi.pi.ExtensionSelectorComponent>;
+				selector = new pi.pi.ExtensionSelectorComponent(
+					title,
+					options,
+					(label) => done({ label, pin: pinRequested }),
+					() => done(undefined),
+					{
+						tui,
+						helpText: "Enter open · → pin",
+						onRight: () => {
+							pinRequested = true;
+							selector.handleInput("\r");
+						},
+					},
+				);
+				return selector;
+			});
+			const hit = selected && rowByLabel.get(selected.label);
+			return hit && selected ? { hit, pin: selected.pin } : undefined;
+		}
+		const selected = await ctx.ui.select(title, options);
+		const hit = selected && rowByLabel.get(selected);
+		return hit ? { hit, pin: false } : undefined;
 	}
 
 	function remember(hit: ParsedUrl): void {
@@ -576,7 +607,7 @@ export default function urlPin(pi: ExtensionAPI): void {
 				// URL's scheme, hostname, and port.
 				if (operand === undefined) {
 					const chosen = await pickUrl(ctx, "Pin URL for ⌘B");
-					if (chosen) await setPin(ctx, chosen.url);
+					if (chosen) await setPin(ctx, chosen.hit.url);
 					return;
 				}
 				const index = Number.parseInt(operand, 10);
@@ -598,8 +629,9 @@ export default function urlPin(pi: ExtensionAPI): void {
 				return;
 			}
 
-			const chosen = await pickUrl(ctx, "Open URL (⌘B opens the first)");
-			if (chosen) await openUrl(ctx, chosen.url);
+			const chosen = await pickUrl(ctx, "Open URL (⌘B opens the first)", true);
+			if (chosen?.pin) await setPin(ctx, chosen.hit.url);
+			else if (chosen) await openUrl(ctx, chosen.hit.url);
 		},
 	});
 }

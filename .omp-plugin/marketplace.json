@@ -6,19 +6,19 @@
 		"email": "the-sides@users.noreply.github.com"
 	},
 	"metadata": {
-		"description": "url-pin for omp: rank the URLs a session mentions and open the busiest one with Cmd+B",
-		"version": "1.0.1"
+		"description": "Track, pin, and restore branch-scoped dev URLs, then open the selected URL with Cmd+B",
+		"version": "1.1.0"
 	},
 	"plugins": [
 		{
 			"name": "url-pin",
-			"description": "Counts the http(s) URLs a session mentions, ranks them per origin, shows the winning port as a status-line chip, and opens it in the external browser with Cmd+B / Ctrl+B.",
+			"description": "Counts HTTP(S) and schemeless host:port URLs, persists opened and pinned URLs per repository branch, supports opening or pinning from /urls, and opens the selected URL with Cmd+B.",
 			"source": {
 				"source": "github",
 				"repo": "the-sides/omp-url-pin",
 				"ref": "main"
 			},
-			"version": "1.0.1",
+			"version": "1.1.0",
 			"author": {
 				"name": "the-sides",
 				"email": "the-sides@users.noreply.github.com"
@@ -31,7 +31,7 @@
 			"commands": [
 				{
 					"name": "urls",
-					"description": "Pick a URL seen this session and open it; pin | unpin | clear"
+					"description": "Pick a branch URL: Enter opens, Right Arrow pins; pin | unpin | clear"
 				}
 			]
 		}
