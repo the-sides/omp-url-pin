@@ -13,13 +13,23 @@
  * `http://localhost:5173/health` reinforce the same port instead of splitting
  * its score, and the busiest origin's own most-seen URL is what opens.
  *
- * Commands: /urls (picker → open), /urls pin [n|url], /urls unpin, /urls clear
+ * Successfully opened and pinned URLs are persisted per repository branch in
+ * omp's active agent directory, so a fresh session in the same worktree can
+ * recover them while its dev server is still running.
+ *
+ * Commands: /urls (picker → open), /urls pin [n|url|/path], /urls unpin, /urls clear
  */
+
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 const PIN_ENTRY = "com.oh-my-pi.url-pin.pin";
 const STATUS_KEY = "url-pin";
+const STATE_VERSION = 1;
+const MAX_BRANCHES = 100;
+const MAX_URLS_PER_BRANCH = 20;
 
 /** Tool results that carry file/source content rather than chat output. */
 const CONTENT_TOOLS: Record<string, true> = {
@@ -59,6 +69,27 @@ interface ParsedUrl {
 	label: string;
 }
 
+interface BranchIdentity {
+	repository: string;
+	branch: string;
+}
+
+interface StoredUrl {
+	url: string;
+	lastUsedAt: number;
+}
+
+interface StoredBranch extends BranchIdentity {
+	urls: StoredUrl[];
+	pinned?: string;
+	updatedAt: number;
+}
+
+interface StoredState {
+	version: typeof STATE_VERSION;
+	branches: StoredBranch[];
+}
+
 function parse(raw: string): ParsedUrl | undefined {
 	let candidate = raw.replace(TRAILING_PUNCT, "");
 	// A trailing ")" belongs to the URL only when an "(" opened inside it.
@@ -84,12 +115,109 @@ function stringField(value: unknown, field: string): string | undefined {
 	return typeof found === "string" ? found : undefined;
 }
 
+const emptyState = (): StoredState => ({ version: STATE_VERSION, branches: [] });
+
+function errorCode(error: unknown): string | undefined {
+	return error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
+}
+
+function decodeState(value: unknown): StoredState | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const state = value as Partial<StoredState>;
+	if (state.version !== STATE_VERSION || !Array.isArray(state.branches)) return undefined;
+	const branches: StoredBranch[] = [];
+	for (const candidate of state.branches) {
+		if (!candidate || typeof candidate !== "object") continue;
+		const branch = candidate as Partial<StoredBranch>;
+		if (typeof branch.repository !== "string" || typeof branch.branch !== "string" || !Array.isArray(branch.urls)) continue;
+		const urls = branch.urls.filter(
+			(item): item is StoredUrl =>
+				!!item &&
+				typeof item === "object" &&
+				typeof item.url === "string" &&
+				typeof item.lastUsedAt === "number" &&
+				Number.isFinite(item.lastUsedAt),
+		);
+		branches.push({
+			repository: branch.repository,
+			branch: branch.branch,
+			urls,
+			...(typeof branch.pinned === "string" ? { pinned: branch.pinned } : {}),
+			updatedAt: typeof branch.updatedAt === "number" && Number.isFinite(branch.updatedAt) ? branch.updatedAt : 0,
+		});
+	}
+	return { version: STATE_VERSION, branches };
+}
+
+async function readState(statePath: string): Promise<StoredState> {
+	try {
+		const decoded = decodeState(JSON.parse(await readFile(statePath, "utf8")));
+		if (!decoded) throw new Error("unsupported or malformed state");
+		return decoded;
+	} catch (error) {
+		if (errorCode(error) === "ENOENT") return emptyState();
+		throw error;
+	}
+}
+
+async function withStateLock<T>(statePath: string, operation: () => Promise<T>): Promise<T> {
+	const lockPath = `${statePath}.lock`;
+	await mkdir(dirname(statePath), { recursive: true });
+	for (let attempt = 0; attempt < 100; attempt += 1) {
+		try {
+			await mkdir(lockPath);
+		} catch (error) {
+			if (errorCode(error) !== "EEXIST") throw error;
+			try {
+				const lockStat = await stat(lockPath);
+				if (Date.now() - lockStat.mtimeMs > 10_000) await rm(lockPath, { recursive: true, force: true });
+			} catch (statError) {
+				if (errorCode(statError) !== "ENOENT") throw statError;
+			}
+			await Bun.sleep(25);
+			continue;
+		}
+		try {
+			return await operation();
+		} finally {
+			await rm(lockPath, { recursive: true, force: true });
+		}
+	}
+	throw new Error("timed out waiting for the state lock");
+}
+
+async function updateState(statePath: string, mutate: (state: StoredState) => void): Promise<void> {
+	await withStateLock(statePath, async () => {
+		let state: StoredState;
+		try {
+			state = await readState(statePath);
+		} catch {
+			try {
+				await rename(statePath, `${statePath}.corrupt-${Date.now()}`);
+			} catch (error) {
+				if (errorCode(error) !== "ENOENT") throw error;
+			}
+			state = emptyState();
+		}
+		mutate(state);
+		const temporaryPath = `${statePath}.tmp-${process.pid}-${Date.now()}`;
+		try {
+			await writeFile(temporaryPath, `${JSON.stringify(state, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+			await rename(temporaryPath, statePath);
+		} finally {
+			await rm(temporaryPath, { force: true });
+		}
+	});
+}
+
 export default function urlPin(pi: ExtensionAPI): void {
 	const hits = new Map<string, Hit>();
+	const statePath = join(pi.pi.getAgentDir(), "url-pin", "state.json");
 	const originCounts = new Map<string, number>();
 	const seenEntries = new Set<string>();
 	let pinned: string | undefined;
 	let seq = 0;
+	let sessionPinRecorded = false;
 
 	function ingest(text: string | undefined): void {
 		if (!text) return;
@@ -164,6 +292,7 @@ export default function urlPin(pi: ExtensionAPI): void {
 				ingestMessage(entry.message);
 			} else if (entry.type === "custom" && entry.customType === PIN_ENTRY) {
 				pinned = stringField(entry.data, "url");
+				sessionPinRecorded = true;
 			}
 		}
 	}
@@ -200,12 +329,21 @@ export default function urlPin(pi: ExtensionAPI): void {
 		updateStatus(ctx);
 	}
 
-	function forget(ctx: ExtensionContext): void {
+	function resetRanking(): void {
 		hits.clear();
 		originCounts.clear();
 		seenEntries.clear();
 		seq = 0;
-		refresh(ctx);
+		sessionPinRecorded = false;
+	}
+
+	function forget(ctx: ExtensionContext): void {
+		hits.clear();
+		originCounts.clear();
+		seenEntries.clear();
+		for (const entry of ctx.sessionManager.getBranch()) seenEntries.add(entry.id);
+		seq = 0;
+		updateStatus(ctx);
 	}
 
 	async function openUrl(ctx: ExtensionContext, url: string): Promise<void> {
@@ -219,7 +357,12 @@ export default function urlPin(pi: ExtensionAPI): void {
 		}
 		const result = await pi.exec(command, args);
 		if (result.code === 0) {
-			ctx.ui.notify(`Opened ${url}`, "info");
+			try {
+				await recordOpened(ctx, url);
+				ctx.ui.notify(`Opened ${url}`, "info");
+			} catch (error) {
+				ctx.ui.notify(`Opened ${url}, but url-pin could not save it: ${String(error)}`, "warning");
+			}
 			return;
 		}
 		ctx.ui.notify(`url-pin: ${command} exited ${result.code} — ${result.stderr.trim() || url}`, "error");
@@ -229,25 +372,37 @@ export default function urlPin(pi: ExtensionAPI): void {
 		refresh(ctx);
 		const top = ranked()[0];
 		if (!top) {
-			ctx.ui.notify("url-pin: no URL seen in this session yet", "warning");
+			ctx.ui.notify("url-pin: no URL seen in this session or saved for this branch", "warning");
 			return;
 		}
 		await openUrl(ctx, top.url);
 	}
 
-	function setPin(ctx: ExtensionContext, url: string | undefined): void {
+	async function setPin(ctx: ExtensionContext, url: string | undefined): Promise<void> {
 		pinned = url;
 		pi.appendEntry(PIN_ENTRY, { url: url ?? null });
 		updateStatus(ctx);
-		ctx.ui.notify(url ? `url-pin: pinned ${url}` : "url-pin: pin cleared", "info");
+		try {
+			await persistPin(ctx, url);
+			ctx.ui.notify(url ? `url-pin: pinned ${url}` : "url-pin: pin cleared", "info");
+		} catch (error) {
+			ctx.ui.notify(`url-pin: pin changed for this session but could not be saved: ${String(error)}`, "warning");
+		}
 	}
 
 	pi.setLabel("url-pin");
 
 	for (const event of ["session_start", "session_switch", "session_branch", "session_tree"] as const) {
-		pi.on(event, (_payload, ctx) => {
+		pi.on(event, async (_payload, ctx) => {
 			pinned = undefined;
-			forget(ctx);
+			resetRanking();
+			syncBranch(ctx);
+			try {
+				await restoreStored(ctx);
+			} catch (error) {
+				ctx.ui.notify(`url-pin: could not restore saved URLs: ${String(error)}`, "warning");
+			}
+			updateStatus(ctx);
 		});
 	}
 	for (const event of ["input", "message_end", "tool_result"] as const) {
@@ -266,7 +421,7 @@ export default function urlPin(pi: ExtensionAPI): void {
 
 	for (const shortcut of ["super+b", "ctrl+b"] as const) {
 		pi.registerShortcut(shortcut, {
-			description: "Open the most-seen URL of this session",
+			description: "Open the best URL for the current branch",
 			handler: (ctx) => openTop(ctx),
 		});
 	}
@@ -280,7 +435,7 @@ export default function urlPin(pi: ExtensionAPI): void {
 	async function pickUrl(ctx: ExtensionCommandContext, title: string): Promise<Hit | undefined> {
 		const rows = ranked();
 		if (rows.length === 0) {
-			ctx.ui.notify("url-pin: no URL seen in this session yet", "warning");
+			ctx.ui.notify("url-pin: no URL seen in this session or saved for this branch", "warning");
 			return undefined;
 		}
 		const pinGlyph = ctx.ui.theme.symbol("icon.pin").trim() || "*";
@@ -302,8 +457,93 @@ export default function urlPin(pi: ExtensionAPI): void {
 		hits.set(hit.url, { url: hit.url, origin: hit.origin, label: hit.label, count: 1, last: seq });
 	}
 
+	async function branchIdentity(ctx: ExtensionContext): Promise<BranchIdentity | undefined> {
+		const result = await pi.exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir", "--abbrev-ref", "HEAD"], {
+			cwd: ctx.cwd,
+		});
+		if (result.code !== 0) return undefined;
+		const [repository, branch] = result.stdout.trim().split(/\r?\n/);
+		return repository && branch ? { repository, branch } : undefined;
+	}
+
+	async function editStoredBranch(
+		ctx: ExtensionContext,
+		create: boolean,
+		mutate: (branch: StoredBranch, now: number) => void,
+	): Promise<void> {
+		const identity = await branchIdentity(ctx);
+		if (!identity) return;
+		await updateState(statePath, (state) => {
+			let stored = state.branches.find(
+				(candidate) => candidate.repository === identity.repository && candidate.branch === identity.branch,
+			);
+			if (!stored) {
+				if (!create) return;
+				stored = { ...identity, urls: [], updatedAt: 0 };
+				state.branches.push(stored);
+			}
+			const now = Date.now();
+			mutate(stored, now);
+			stored.updatedAt = now;
+			state.branches.sort((a, b) => b.updatedAt - a.updatedAt);
+			state.branches.splice(MAX_BRANCHES);
+		});
+	}
+
+	async function recordOpened(ctx: ExtensionContext, url: string): Promise<void> {
+		await editStoredBranch(ctx, true, (stored, now) => {
+			stored.urls = [{ url, lastUsedAt: now }, ...stored.urls.filter((candidate) => candidate.url !== url)].slice(
+				0,
+				MAX_URLS_PER_BRANCH,
+			);
+		});
+	}
+
+	async function persistPin(ctx: ExtensionContext, url: string | undefined): Promise<void> {
+		await editStoredBranch(ctx, url !== undefined, (stored, now) => {
+			stored.pinned = url;
+			if (url) {
+				stored.urls = [{ url, lastUsedAt: now }, ...stored.urls.filter((candidate) => candidate.url !== url)].slice(
+					0,
+					MAX_URLS_PER_BRANCH,
+				);
+			}
+		});
+	}
+
+	async function clearStored(ctx: ExtensionContext): Promise<void> {
+		const identity = await branchIdentity(ctx);
+		if (!identity) return;
+		await updateState(statePath, (state) => {
+			state.branches = state.branches.filter(
+				(candidate) => candidate.repository !== identity.repository || candidate.branch !== identity.branch,
+			);
+		});
+	}
+
+	async function restoreStored(ctx: ExtensionContext): Promise<void> {
+		const identity = await branchIdentity(ctx);
+		if (!identity) return;
+		const state = await readState(statePath);
+		const stored = state.branches.find(
+			(candidate) => candidate.repository === identity.repository && candidate.branch === identity.branch,
+		);
+		if (!stored) return;
+		for (const candidate of [...stored.urls].sort((a, b) => a.lastUsedAt - b.lastUsedAt)) {
+			const parsed = parse(candidate.url);
+			if (parsed) remember(parsed);
+		}
+		if (!sessionPinRecorded && stored.pinned) {
+			const parsed = parse(stored.pinned);
+			if (parsed) {
+				remember(parsed);
+				pinned = parsed.url;
+			}
+		}
+	}
+
 	pi.registerCommand("urls", {
-		description: "URLs seen this session — pick one to open (pin | unpin | clear)",
+		description: "URLs seen this session or saved for this branch — pick one to open (pin | unpin | clear)",
 		getArgumentCompletions: (prefix) => {
 			const typed = prefix.trim();
 			const verbs = ["pin", "unpin", "clear"].filter((verb) => verb.startsWith(typed));
@@ -313,32 +553,48 @@ export default function urlPin(pi: ExtensionAPI): void {
 			const [verb, operand] = args.trim().split(/\s+/).filter(Boolean);
 			if (verb === "clear") {
 				forget(ctx);
-				setPin(ctx, undefined);
+				pinned = undefined;
+				pi.appendEntry(PIN_ENTRY, { url: null });
+				try {
+					await clearStored(ctx);
+					ctx.ui.notify("url-pin: URLs cleared for this branch", "info");
+				} catch (error) {
+					ctx.ui.notify(`url-pin: live URLs cleared, but saved URLs could not be removed: ${String(error)}`, "warning");
+				}
 				return;
 			}
 			if (verb === "unpin") {
-				setPin(ctx, undefined);
+				await setPin(ctx, undefined);
 				return;
 			}
 
 			refresh(ctx);
 
 			if (verb === "pin") {
-				// Bare `/urls pin` pins whatever you select from the list; an operand
-				// (rank number or URL) skips the picker for scripted/keyboard use.
+				// Bare `/urls pin` pins whatever you select from the list. A rank
+				// number or absolute URL selects directly; `/path` uses the leading
+				// URL's scheme, hostname, and port.
 				if (operand === undefined) {
 					const chosen = await pickUrl(ctx, "Pin URL for ⌘B");
-					if (chosen) setPin(ctx, chosen.url);
+					if (chosen) await setPin(ctx, chosen.url);
 					return;
 				}
 				const index = Number.parseInt(operand, 10);
-				const chosen = Number.isFinite(index) ? ranked()[index - 1] : parse(operand);
+				let chosen: Hit | ParsedUrl | undefined;
+				if (Number.isFinite(index)) {
+					chosen = ranked()[index - 1];
+				} else if (operand.startsWith("/")) {
+					const top = ranked()[0];
+					chosen = top ? parse(`${top.origin}${operand}`) : undefined;
+				} else {
+					chosen = parse(operand);
+				}
 				if (!chosen) {
 					ctx.ui.notify(`url-pin: cannot pin "${operand}"`, "error");
 					return;
 				}
 				remember(chosen);
-				setPin(ctx, chosen.url);
+				await setPin(ctx, chosen.url);
 				return;
 			}
 

@@ -1,4 +1,8 @@
-import { beforeEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, beforeEach, expect, test } from "bun:test";
 
 import urlPin from "../src/url-pin.ts";
 
@@ -26,6 +30,9 @@ let options: Option[];
 let pick: number;
 let ids: number;
 let ctx: unknown;
+let agentDir: string;
+let repository: string;
+let branchName: string;
 
 let timers: { fn: () => void; delay: number }[];
 let symbols: Record<string, string>;
@@ -47,6 +54,7 @@ function harness(): void {
 
 	const pi = {
 		setLabel() {},
+		pi: { getAgentDir: () => agentDir },
 		on(event: string, handler: (event: unknown, ctx: unknown) => unknown) {
 			(handlers[event] ??= []).push(handler);
 		},
@@ -61,12 +69,16 @@ function harness(): void {
 			branch.push({ id: `pin-${++ids}`, type: "custom", customType: type, data });
 		},
 		async exec(command: string, args: string[]) {
+			if (command === "git") {
+				return { code: 0, stdout: `${repository}\n${branchName}\n`, stderr: "", killed: false };
+			}
 			execCalls.push([command, ...args]);
 			return { code: 0, stdout: "", stderr: "", killed: false };
 		},
 	};
 
 	ctx = {
+		cwd: "/worktree",
 		hasUI: true,
 		sessionManager: { getBranch: () => branch },
 		setTimeout(fn: () => void, delay: number) {
@@ -106,7 +118,14 @@ function flushTimers(): void {
 	for (const timer of scheduled) timer.fn();
 }
 
-beforeEach(harness);
+beforeEach(() => {
+	agentDir = mkdtempSync(join(tmpdir(), "url-pin-test-"));
+	repository = "/repos/example/.git";
+	branchName = "feature/persist-urls";
+	harness();
+});
+
+afterEach(() => rmSync(agentDir, { recursive: true, force: true }));
 
 test("counts chat and tool output, ignores file content", async () => {
 	branch = [
@@ -210,6 +229,76 @@ test("a pin outranks frequency and survives a branch replay", async () => {
 	await commands.urls("unpin", ctx);
 	await shortcuts["ctrl+b"](ctx);
 	expect(opened()).toBe("http://localhost:5173");
+});
+
+test("a path pin uses the leading URL origin and survives a new session", async () => {
+	branch = [
+		message({
+			role: "assistant",
+			content: [{ type: "text", text: "http://localhost:5173/app http://localhost:5173/app http://localhost:4300/admin" }],
+		}),
+	];
+	await fire("session_start");
+	await commands.urls("pin /fleet/pm", ctx);
+	await shortcuts["ctrl+b"](ctx);
+	expect(opened()).toBe("http://localhost:5173/fleet/pm");
+
+	harness();
+	await fire("session_start");
+	await shortcuts["ctrl+b"](ctx);
+	expect(status()).toBe("\uf08d 5173");
+	expect(opened()).toBe("http://localhost:5173/fleet/pm");
+});
+
+test("opened and pinned URLs survive a new session on the same branch", async () => {
+	branch = [
+		message({
+			role: "assistant",
+			content: [{ type: "text", text: "http://localhost:5173/app http://localhost:5173/app http://localhost:4300/admin" }],
+		}),
+	];
+	await fire("session_start");
+	await shortcuts["ctrl+b"](ctx);
+	expect(opened()).toBe("http://localhost:5173/app");
+	await commands.urls("pin http://localhost:4300/admin", ctx);
+
+	harness();
+	await fire("session_start");
+
+	expect(status()).toBe("\uf08d 4300");
+	await commands.urls("", ctx);
+	expect(options.map((option) => option.label).join("\n")).toContain("http://localhost:5173/app");
+	expect(options.map((option) => option.label).join("\n")).toContain("http://localhost:4300/admin");
+	expect(opened()).toBe("http://localhost:4300/admin");
+});
+
+test("saved URLs are isolated by repository branch", async () => {
+	branch = [message({ role: "assistant", content: [{ type: "text", text: "http://localhost:5173/app" }] })];
+	await fire("session_start");
+	await shortcuts["ctrl+b"](ctx);
+
+	branchName = "feature/another-worktree";
+	harness();
+	await fire("session_start");
+	expect(status()).toBeUndefined();
+
+	branchName = "feature/persist-urls";
+	harness();
+	await fire("session_start");
+	expect(status()).toBe("\uf0ac 5173");
+});
+
+test("clear removes both the live ranking and saved branch record", async () => {
+	branch = [message({ role: "assistant", content: [{ type: "text", text: "http://localhost:5173/app" }] })];
+	await fire("session_start");
+	await shortcuts["ctrl+b"](ctx);
+
+	await commands.urls("clear", ctx);
+	expect(status()).toBeUndefined();
+
+	harness();
+	await fire("session_start");
+	expect(status()).toBeUndefined();
 });
 
 test("`/urls pin` pins whatever is selected in the list", async () => {

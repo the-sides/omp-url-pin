@@ -4,11 +4,11 @@ Every session leaks URLs — a Vite banner, a `curl` you ran, a preview link the
 
 `url-pin` counts the http(s) URLs a session mentions, ranks them by origin, and binds the winner to a key:
 
-- **Cmd+B** (`super+b`) or **Ctrl+B** — open the busiest URL of this session in the external browser.
-- Status chip — a globe followed by the port (`🌐 5173`), or a pin glyph when pinned. The marker is taken from the active `symbolPreset`, so it renders as a Nerd Font glyph, an emoji, or `:` under `ascii` — matching its neighbouring segments instead of hardcoding a font the terminal may lack.
-- `/urls` — picker of every URL seen, ranked; `Enter` opens the selection.
-- `/urls pin` — the same list, where `Enter` pins the selection instead of opening it. `/urls pin 3` and `/urls pin <url>` skip the picker; `/urls unpin` releases. A pin outranks frequency, is marked in both lists, and is stored in the session, so it survives resume, branch, and reload.
-- `/urls clear` — drop the ranking and start counting again.
+- **Cmd+B** (`super+b`) or **Ctrl+B** — open the busiest URL available for the current branch.
+- Status chip — a globe followed by the port (`🌐 5173`), or a pin glyph when pinned. The marker is taken from the active `symbolPreset`, so it renders as a Nerd Font glyph, an emoji, or `:` under `ascii` — matching its neighbouring segments instead of hardcoding a font the terminal may not have.
+- `/urls` — picker of URLs seen in the session or recovered for the current branch; `Enter` opens the selection.
+- `/urls pin` — the same list, where `Enter` pins the selection instead of opening it. `/urls pin 3` and `/urls pin <url>` select a rank or absolute URL directly. `/urls pin /fleet/pm` takes the leading ranked URL's scheme, hostname, and port, replaces its path with `/fleet/pm`, and pins the result. `/urls unpin` releases. A pin outranks frequency, is marked in both lists, and survives resume, branch, reload, and a newly started session on the same repository branch.
+- `/urls clear` — drop the ranking, pin, and saved record for the current branch.
 
 ## Install
 
@@ -42,6 +42,14 @@ Sources counted: your prompts, assistant text, agent tool output, `!bash` output
 Sources skipped: tool results that carry file content (`read`, `grep`, `glob`, `edit`, `write`, `apply_patch`, `ast_edit`, `lsp`, `todo`, `memory_edit`, `learn`). A URL sitting in a source file should never outrank a server you actually started.
 
 Ties are ranked per **origin**, not per URL: `http://localhost:5173/` and `http://localhost:5173/health` reinforce the same port rather than splitting its score, and the busiest origin's own most-seen URL is the one that opens. A pin always wins.
+
+## Persistence
+
+A URL becomes branch state only after `url-pin` successfully opens it or you explicitly pin it. Merely appearing in a session does not persist it.
+
+State lives at `url-pin/state.json` under omp's active agent directory (normally `~/.omp/agent`, and profile-aware through omp's `getAgentDir()` API). Each record contains the repository's common Git directory, branch name, successful URLs, last-use times, and optional pin. Repository identity prevents equal branch names in unrelated projects from colliding; the common Git directory lets linked worktrees share the repository identity while branch names keep their URLs separate.
+
+The file is atomically replaced under a cross-process lock because several omp sessions can update it at once. Storage is bounded to the 100 most recently updated branches and 20 URLs per branch. `/urls unpin` keeps the branch's proven URLs; `/urls clear` removes its complete saved record.
 
 ## Putting the chip in the status line
 
@@ -82,4 +90,4 @@ config.keys = {
 bun test
 ```
 
-Covers ranking, origin grouping, the file-content exclusion, `!bash` ingestion, punctuation trimming, pin persistence through a branch replay, and the empty-session path.
+Covers ranking, origin grouping, the file-content exclusion, `!bash` ingestion, punctuation trimming, absolute and origin-relative pins, persistence through branch replay and new sessions, branch isolation, clearing, and the empty-session path.
