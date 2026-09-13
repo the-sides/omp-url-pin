@@ -300,6 +300,37 @@ test("a schemeless pin is normalized and persisted", async () => {
 	expect(opened()).toBe("http://localhost:3400");
 });
 
+test("port shorthand pins localhost with an optional route and persists", async () => {
+	await fire("session_start");
+
+	await commands.urls("pin 5142", ctx);
+	await shortcuts["super+b"](ctx);
+	expect(opened()).toBe("http://localhost:5142");
+
+	await commands.urls("pin 2351/sign-in", ctx);
+	await shortcuts["super+b"](ctx);
+	expect(opened()).toBe("http://localhost:2351/sign-in");
+
+	harness();
+	await fire("session_start");
+	await shortcuts["super+b"](ctx);
+	expect(opened()).toBe("http://localhost:2351/sign-in");
+});
+
+test("a numeric operand is a port even when the same URL rank exists", async () => {
+	branch = [
+		message({
+			role: "assistant",
+			content: [{ type: "text", text: "http://localhost:5173 http://localhost:5173 http://localhost:4300" }],
+		}),
+	];
+	await fire("session_start");
+
+	await commands.urls("pin 2", ctx);
+	await shortcuts["super+b"](ctx);
+	expect(opened()).toBe("http://localhost:2");
+});
+
 test("a path pin uses the leading URL origin and survives a new session", async () => {
 	branch = [
 		message({

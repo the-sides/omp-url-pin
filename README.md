@@ -7,7 +7,7 @@ Every session leaks URLs — a Vite banner, a `curl` you ran, a preview link the
 - **Cmd+B** (`super+b`) — open the busiest URL available for the current branch. `Ctrl+B` is intentionally not registered because it collides with tmux and herdr commands.
 - Status chip — a globe followed by the port (`🌐 5173`), or a pin glyph when pinned. The marker is taken from the active `symbolPreset`, so it renders as a Nerd Font glyph, an emoji, or `:` under `ascii` — matching its neighbouring segments instead of hardcoding a font the terminal may not have.
 - `/urls` — picker of URLs seen in the session or recovered for the current branch. `Enter` opens the highlighted URL; `→` pins it without opening the browser.
-- `/urls pin` — the same list, where `Enter` pins the selection instead of opening it. `/urls pin 3` and `/urls pin <url>` select a rank or absolute URL directly. `/urls pin /fleet/pm` takes the leading ranked URL's scheme, hostname, and port, replaces its path with `/fleet/pm`, and pins the result. `/urls unpin` releases. A pin outranks frequency, is marked in both lists, and survives resume, branch, reload, and a newly started session on the same repository branch.
+- `/urls pin` — the same list, where `Enter` pins the selection instead of opening it. A numeric operand always starts a localhost port: `/urls pin 5142` pins `http://localhost:5142`, and `/urls pin 2351/sign-in` pins `http://localhost:2351/sign-in`. An absolute URL selects directly. `/urls pin /fleet/pm` takes the leading ranked URL's scheme, hostname, and port, replaces its path with `/fleet/pm`, and pins the result. `/urls unpin` releases. A pin outranks frequency, is marked in both lists, and survives resume, branch, reload, and a newly started session on the same repository branch.
 - `/urls clear` — drop the ranking, pin, and saved record for the current branch.
 
 ## Install
@@ -39,7 +39,7 @@ Counting reads the **session branch**, deduplicated by entry id — not the live
 
 Sources counted: your prompts, assistant text, agent tool output, `!bash` output, `$python` output.
 
-Schemeless addresses with an explicit port are normalized to HTTP: `localhost:3400`, `127.0.0.1:3400/app`, and `preview.example.com:8080` become `http://...` URLs. This applies both to discovered text and direct pins such as `/urls pin localhost:3400`.
+Schemeless addresses with an explicit port are normalized to HTTP: `localhost:3400`, `127.0.0.1:3400/app`, and `preview.example.com:8080` become `http://...` URLs. This applies both to discovered text and direct pins. A leading port is shorthand for localhost, so `2351/sign-in` becomes `http://localhost:2351/sign-in`.
 
 Sources skipped: tool results that carry file content (`read`, `grep`, `glob`, `edit`, `write`, `apply_patch`, `ast_edit`, `lsp`, `todo`, `memory_edit`, `learn`). A URL sitting in a source file should never outrank a server you actually started.
 
@@ -92,4 +92,4 @@ config.keys = {
 bun test
 ```
 
-Covers ranking, origin grouping, schemeless URL discovery and pinning, right-arrow menu pinning, the file-content exclusion, `!bash` ingestion, punctuation trimming, absolute and origin-relative pins, persistence through branch replay and new sessions, branch isolation, clearing, and the empty-session path.
+Covers ranking, origin grouping, schemeless and port-first URL pinning, right-arrow menu pinning, the file-content exclusion, `!bash` ingestion, punctuation trimming, absolute and origin-relative pins, persistence through branch replay and new sessions, branch isolation, clearing, and the empty-session path.

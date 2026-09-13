@@ -1,6 +1,6 @@
 {
 	"name": "omp-url-pin",
-	"version": "1.1.0",
+	"version": "1.2.0",
 	"description": "Track, pin, and restore branch-scoped dev URLs, then open the selected URL with Cmd+B",
 	"license": "MIT",
 	"author": {

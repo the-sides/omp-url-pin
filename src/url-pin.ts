@@ -17,7 +17,7 @@
  * omp's active agent directory, so a fresh session in the same worktree can
  * recover them while its dev server is still running.
  *
- * Commands: /urls (picker → open), /urls pin [n|url|/path], /urls unpin, /urls clear
+ * Commands: /urls (picker → open), /urls pin [url|/path|port/path], /urls unpin, /urls clear
  */
 
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -51,6 +51,7 @@ const URL_RE =
 const SCHEMELESS_URL_RE =
 	/^(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|\[[0-9a-f:]+\]|(?:[a-z0-9-]+\.)+[a-z0-9-]+):\d{1,5}(?:[/?#][^\s<>"'`\\|]*)?$/i;
 const TRAILING_PUNCT = /[.,;:!?'"`*_~>\]}]+$/;
+const PORT_SHORTHAND_RE = /^\d{1,5}(?:[/?#].*)?$/;
 
 /** Re-sync delays after a user-run `!bash`/`$python`, whose output lands with no event. */
 const USER_COMMAND_RESYNC_MS = [500, 3000];
@@ -431,7 +432,7 @@ export default function urlPin(pi: ExtensionAPI): void {
 	/**
 	 * Show the ranked list and return both the chosen URL and requested action.
 	 *
-	 * The rows carry their rank number so `/urls pin 3` and the picker agree.
+	 * The rows carry display ranks and mark the current pin.
 	 * In the normal `/urls` picker, right arrow confirms the highlighted row as
 	 * a pin; Enter confirms it as an open.
 	 */
@@ -602,20 +603,20 @@ export default function urlPin(pi: ExtensionAPI): void {
 			refresh(ctx);
 
 			if (verb === "pin") {
-				// Bare `/urls pin` pins whatever you select from the list. A rank
-				// number or absolute URL selects directly; `/path` uses the leading
-				// URL's scheme, hostname, and port.
+				// Bare `/urls pin` opens the picker. An absolute URL selects
+				// directly; `/path` uses the leading URL's origin. A number starts
+				// a localhost port, so `2351/sign-in` becomes that port and route.
 				if (operand === undefined) {
 					const chosen = await pickUrl(ctx, "Pin URL for ⌘B");
 					if (chosen) await setPin(ctx, chosen.hit.url);
 					return;
 				}
-				const index = Number.parseInt(operand, 10);
+				const rows = ranked();
 				let chosen: Hit | ParsedUrl | undefined;
-				if (Number.isFinite(index)) {
-					chosen = ranked()[index - 1];
+				if (PORT_SHORTHAND_RE.test(operand)) {
+					chosen = parse(`localhost:${operand}`);
 				} else if (operand.startsWith("/")) {
-					const top = ranked()[0];
+					const top = rows[0];
 					chosen = top ? parse(`${top.origin}${operand}`) : undefined;
 				} else {
 					chosen = parse(operand);
