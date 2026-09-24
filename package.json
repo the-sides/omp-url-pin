@@ -1,6 +1,6 @@
 {
 	"name": "omp-url-pin",
-	"version": "1.2.0",
+	"version": "1.2.1",
 	"description": "Track, pin, and restore branch-scoped dev URLs, then open the selected URL with Cmd+B",
 	"license": "MIT",
 	"author": {
@@ -16,11 +16,24 @@
 		"url": "https://github.com/the-sides/omp-url-pin/issues"
 	},
 	"type": "module",
-	"keywords": ["omp-plugin", "omp-extension", "urls", "browser", "status-line", "ports"],
+	"keywords": [
+		"omp-plugin",
+		"omp-extension",
+		"urls",
+		"browser",
+		"status-line",
+		"ports"
+	],
 	"omp": {
-		"extensions": ["./src/url-pin.ts"]
+		"extensions": [
+			"./src/url-pin.ts"
+		]
 	},
-	"files": ["src", "README.md", "LICENSE"],
+	"files": [
+		"src",
+		"README.md",
+		"LICENSE"
+	],
 	"scripts": {
 		"test": "bun test",
 		"version": "bun scripts/sync-catalog.ts && git add .omp-plugin/marketplace.json"
