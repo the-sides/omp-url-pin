@@ -16,8 +16,7 @@
 			"source": {
 				"source": "github",
 				"repo": "the-sides/omp-url-pin",
-				"ref": "main",
-				"sha": "4a6e997115fa1d71e00fe2d64e460fb286d89526"
+				"ref": "v1.2.0"
 			},
 			"version": "1.2.0",
 			"author": {
@@ -28,7 +27,13 @@
 			"repository": "https://github.com/the-sides/omp-url-pin.git",
 			"license": "MIT",
 			"category": "productivity",
-			"keywords": ["urls", "browser", "status-line", "ports", "worktrees"],
+			"keywords": [
+				"urls",
+				"browser",
+				"status-line",
+				"ports",
+				"worktrees"
+			],
 			"commands": [
 				{
 					"name": "urls",

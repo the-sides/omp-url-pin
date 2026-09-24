@@ -16,15 +16,13 @@
 		"url": "https://github.com/the-sides/omp-url-pin/issues"
 	},
 	"type": "module",
-	"keywords": ["omp-plugin", "omp-extension", "pi-package", "pi-extension", "urls", "browser", "status-line", "ports"],
+	"keywords": ["omp-plugin", "omp-extension", "urls", "browser", "status-line", "ports"],
 	"omp": {
-		"extensions": ["./src/url-pin.ts"]
-	},
-	"pi": {
 		"extensions": ["./src/url-pin.ts"]
 	},
 	"files": ["src", "README.md", "LICENSE"],
 	"scripts": {
-		"test": "bun test"
+		"test": "bun test",
+		"version": "bun scripts/sync-catalog.ts && git add .omp-plugin/marketplace.json"
 	}
 }

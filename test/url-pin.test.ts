@@ -484,3 +484,14 @@ test("an empty session warns instead of opening something stale", async () => {
 	expect(notices.at(-1)).toContain("no URL seen");
 	expect(status()).toBeUndefined();
 });
+
+test("the marketplace catalog installs the release npm publishes", async () => {
+	const { version } = await Bun.file(new URL("../package.json", import.meta.url)).json();
+	const catalog = await Bun.file(new URL("../.omp-plugin/marketplace.json", import.meta.url)).json();
+
+	expect(catalog.metadata.version).toBe(version);
+	for (const plugin of catalog.plugins) {
+		expect(plugin.version).toBe(version);
+		expect(plugin.source.ref).toBe(`v${version}`);
+	}
+});
