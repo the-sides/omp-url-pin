@@ -20,8 +20,10 @@
  * Commands: /urls (picker → open), /urls pin [url|/path|port/path], /urls unpin, /urls clear
  */
 
+import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, win32 } from "node:path";
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
@@ -224,6 +226,21 @@ export default function urlPin(pi: ExtensionAPI): void {
 	let seq = 0;
 	let sessionPinRecorded = false;
 
+	/** Contain failures at host callback boundaries, including managed timers. */
+	async function runSafely(ctx: ExtensionContext, action: string, operation: () => void | Promise<void>): Promise<void> {
+		try {
+			await operation();
+		} catch (error) {
+			const message = `url-pin: could not ${action}: ${String(error)}`;
+			try {
+				ctx.ui.notify(message, "error");
+			} catch {
+				// A stale UI must not turn error reporting into another rejection.
+				console.error(message);
+			}
+		}
+	}
+
 	function ingest(text: string | undefined): void {
 		if (!text) return;
 		for (const match of text.matchAll(URL_RE)) {
@@ -355,22 +372,31 @@ export default function urlPin(pi: ExtensionAPI): void {
 		let command = "xdg-open";
 		let args = [url];
 		if (process.platform === "darwin") {
-			command = "open";
+			command = "/usr/bin/open";
 		} else if (process.platform === "win32") {
-			command = "cmd";
-			args = ["/c", "start", "", url];
+			const systemRoot = process.env.SystemRoot?.trim() || process.env.SYSTEMROOT?.trim() || "C:\\Windows";
+			const powershell = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+			command = existsSync(powershell) ? powershell : "powershell.exe";
+			const script = `$ErrorActionPreference='Stop';Start-Process '${url.replaceAll("'", "''")}'`;
+			args = ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")];
 		}
-		const result = await pi.exec(command, args);
-		if (result.code === 0) {
+		// Opening a browser does not depend on the session's worktree still existing.
+		try {
+			const result = await pi.exec(command, args, { cwd: homedir() });
+			if (result.killed || result.code !== 0) {
+				const reason = result.killed ? "was interrupted" : `exited ${result.code}`;
+				ctx.ui.notify(`url-pin: ${command} ${reason} — ${result.stderr.trim() || url}`, "error");
+				return;
+			}
 			try {
 				await recordOpened(ctx, url);
 				ctx.ui.notify(`Opened ${url}`, "info");
 			} catch (error) {
 				ctx.ui.notify(`Opened ${url}, but url-pin could not save it: ${String(error)}`, "warning");
 			}
-			return;
+		} catch (error) {
+			ctx.ui.notify(`url-pin: could not open ${url} with ${command}: ${String(error)}`, "error");
 		}
-		ctx.ui.notify(`url-pin: ${command} exited ${result.code} — ${result.stderr.trim() || url}`, "error");
 	}
 
 	async function openTop(ctx: ExtensionContext): Promise<void> {
@@ -384,8 +410,8 @@ export default function urlPin(pi: ExtensionAPI): void {
 	}
 
 	async function setPin(ctx: ExtensionContext, url: string | undefined): Promise<void> {
-		pinned = url;
 		pi.appendEntry(PIN_ENTRY, { url: url ?? null });
+		pinned = url;
 		updateStatus(ctx);
 		try {
 			await persistPin(ctx, url);
@@ -398,7 +424,7 @@ export default function urlPin(pi: ExtensionAPI): void {
 	pi.setLabel("url-pin");
 
 	for (const event of ["session_start", "session_switch", "session_branch", "session_tree"] as const) {
-		pi.on(event, async (_payload, ctx) => {
+		pi.on(event, (_payload, ctx) => runSafely(ctx, "restore URLs", async () => {
 			pinned = undefined;
 			resetRanking();
 			syncBranch(ctx);
@@ -408,25 +434,29 @@ export default function urlPin(pi: ExtensionAPI): void {
 				ctx.ui.notify(`url-pin: could not restore saved URLs: ${String(error)}`, "warning");
 			}
 			updateStatus(ctx);
-		});
+		}));
 	}
 	for (const event of ["input", "message_end", "tool_result"] as const) {
-		pi.on(event, (_payload, ctx) => refresh(ctx));
+		pi.on(event, (_payload, ctx) => runSafely(ctx, "refresh URLs", () => refresh(ctx)));
 	}
 	// `user_bash`/`user_python` fire *before* the command runs, and its output is
 	// appended to the session with no completion event of its own. Re-sync on a
 	// managed timer so the chip catches a `!npm run dev` banner without waiting
 	// for the next prompt; the shortcut re-syncs on press regardless.
 	for (const event of ["user_bash", "user_python"] as const) {
-		pi.on(event, (_payload, ctx) => {
+		pi.on(event, (_payload, ctx) => runSafely(ctx, "refresh URLs", () => {
 			refresh(ctx);
-			for (const delay of USER_COMMAND_RESYNC_MS) ctx.setTimeout(() => refresh(ctx), delay);
-		});
+			for (const delay of USER_COMMAND_RESYNC_MS) {
+				ctx.setTimeout(() => {
+					void runSafely(ctx, "refresh URLs", () => refresh(ctx));
+				}, delay);
+			}
+		}));
 	}
 
 	pi.registerShortcut("super+b", {
 		description: "Open the best URL for the current branch",
-		handler: (ctx) => openTop(ctx),
+		handler: (ctx) => runSafely(ctx, "open URL", () => openTop(ctx)),
 	});
 
 	/**
@@ -581,7 +611,7 @@ export default function urlPin(pi: ExtensionAPI): void {
 			const verbs = ["pin", "unpin", "clear"].filter((verb) => verb.startsWith(typed));
 			return verbs.length > 0 ? verbs.map((verb) => ({ value: verb, label: verb })) : null;
 		},
-		handler: async (args, ctx) => {
+		handler: (args, ctx) => runSafely(ctx, "run /urls", async () => {
 			const [verb, operand] = args.trim().split(/\s+/).filter(Boolean);
 			if (verb === "clear") {
 				forget(ctx);
@@ -633,6 +663,6 @@ export default function urlPin(pi: ExtensionAPI): void {
 			const chosen = await pickUrl(ctx, "Open URL (⌘B opens the first)", true);
 			if (chosen?.pin) await setPin(ctx, chosen.hit.url);
 			else if (chosen) await openUrl(ctx, chosen.hit.url);
-		},
+		}),
 	});
 }

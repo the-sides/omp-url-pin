@@ -56,6 +56,14 @@ let ctx: unknown;
 let agentDir: string;
 let repository: string;
 let branchName: string;
+let execError: Error | undefined;
+let notifyError: Error | undefined;
+let gitError: Error | undefined;
+let pickerError: Error | undefined;
+let branchError: Error | undefined;
+let appendError: Error | undefined;
+let execResult: { code: number; stdout: string; stderr: string; killed: boolean };
+let noticeTypes: string[];
 
 let timers: { fn: () => void; delay: number }[];
 let symbols: Record<string, string>;
@@ -75,6 +83,10 @@ function harness(): void {
 	pick = 0;
 	pickerInput = "enter";
 	ids = 0;
+	execError = gitError = pickerError = branchError = appendError = undefined;
+	execResult = { code: 0, stdout: "", stderr: "", killed: false };
+	noticeTypes = [];
+	notifyError = undefined;
 
 	const pi = {
 		setLabel() {},
@@ -89,22 +101,30 @@ function harness(): void {
 			commands[name] = opts.handler;
 		},
 		appendEntry(type: string, data: unknown) {
+			if (appendError) throw appendError;
 			appended.push({ type, data });
 			branch.push({ id: `pin-${++ids}`, type: "custom", customType: type, data });
 		},
 		async exec(command: string, args: string[]) {
 			if (command === "git") {
+				if (gitError) throw gitError;
 				return { code: 0, stdout: `${repository}\n${branchName}\n`, stderr: "", killed: false };
 			}
 			execCalls.push([command, ...args]);
-			return { code: 0, stdout: "", stderr: "", killed: false };
+			if (execError) throw execError;
+			return execResult;
 		},
 	};
 
 	ctx = {
 		cwd: "/worktree",
 		hasUI: true,
-		sessionManager: { getBranch: () => branch },
+		sessionManager: {
+			getBranch: () => {
+				if (branchError) throw branchError;
+				return branch;
+			},
+		},
 		setTimeout(fn: () => void, delay: number) {
 			timers.push({ fn, delay });
 			return timers.length;
@@ -113,10 +133,13 @@ function harness(): void {
 			setStatus(_key: string, text: string | undefined) {
 				statuses.push(text);
 			},
-			notify(message: string) {
+			notify(message: string, type: string) {
+				noticeTypes.push(type);
+				if (notifyError) throw notifyError;
 				notices.push(message);
 			},
 			async select(_title: string, offered: Option[]) {
+				if (pickerError) throw pickerError;
 				options = offered;
 				return offered[pick]?.label;
 			},
@@ -128,6 +151,7 @@ function harness(): void {
 					done: (result: T) => void,
 				) => { handleInput?: (input: string) => void } | Promise<{ handleInput?: (input: string) => void }>,
 			): Promise<T | undefined> {
+				if (pickerError) throw pickerError;
 				let result: T | undefined;
 				const component = await factory({}, {}, {}, (selected) => {
 					result = selected;
@@ -201,6 +225,124 @@ test("detects a schemeless host and port as HTTP", async () => {
 	expect(status()).toBe("\uf0ac 3400");
 	await shortcuts["super+b"](ctx);
 	expect(opened()).toBe("http://localhost:3400/fleet/pm");
+});
+
+for (const entryPoint of ["shortcut", "picker"] as const) {
+	test(`${entryPoint} reports a rejected opener without saving the URL and can recover`, async () => {
+		branch = [message({ role: "assistant", content: "http://localhost:4599/settings" })];
+		await fire("session_start");
+		execError = new Error("ENOENT: no such file or directory, posix_spawn 'open'");
+
+		if (entryPoint === "shortcut") await shortcuts["super+b"](ctx);
+		else await commands.urls("", ctx);
+		expect(noticeTypes.at(-1)).toBe("error");
+		expect(notices.at(-1)).toContain("ENOENT");
+		expect(notices.at(-1)).toContain("http://localhost:4599/settings");
+		expect(await Bun.file(join(agentDir, "url-pin", "state.json")).exists()).toBe(false);
+		expect(status()).toBe("\uf0ac 4599");
+
+		execError = undefined;
+		if (entryPoint === "shortcut") await shortcuts["super+b"](ctx);
+		else await commands.urls("", ctx);
+		harness();
+		await fire("session_start");
+		expect(status()).toBe("\uf0ac 4599");
+	});
+}
+
+for (const failure of [
+	{ code: 1, stderr: "No browser configured", killed: false },
+	{ code: 0, stderr: "", killed: true },
+]) {
+	test(`an ${failure.killed ? "interrupted" : "unsuccessful"} opener does not persist a URL`, async () => {
+		branch = [message({ role: "assistant", content: "http://localhost:4599" })];
+		await fire("session_start");
+		execResult = { ...failure, stdout: "" };
+		await shortcuts["super+b"](ctx);
+		expect(noticeTypes.at(-1)).toBe("error");
+		expect(await Bun.file(join(agentDir, "url-pin", "state.json")).exists()).toBe(false);
+		if (failure.stderr) expect(notices.at(-1)).toContain(failure.stderr);
+		harness();
+		await fire("session_start");
+		expect(status()).toBeUndefined();
+	});
+}
+
+for (const args of ["", "pin"]) {
+	test(`a failed ${args || "open"} picker reports an error and leaves the pin unchanged`, async () => {
+		await commands.urls("pin 4599", ctx);
+		pickerError = new Error("selector unavailable");
+		await commands.urls(args, ctx);
+		expect(noticeTypes.at(-1)).toBe("error");
+		expect(notices.at(-1)).toContain("selector unavailable");
+		expect(status()).toBe("\uf08d 4599");
+		expect(execCalls).toHaveLength(0);
+	});
+}
+
+test("a failed session entry write reports an error without changing the live pin", async () => {
+	await commands.urls("pin 4599", ctx);
+	appendError = new Error("session is closed");
+	await commands.urls("pin 4600", ctx);
+	expect(noticeTypes.at(-1)).toBe("error");
+	expect(notices.at(-1)).toContain("session is closed");
+	expect(status()).toBe("\uf08d 4599");
+});
+
+test("refresh errors are contained in shortcuts, events, and delayed callbacks", async () => {
+	await fire("user_bash");
+	branchError = new Error("session is unavailable");
+	await shortcuts["super+b"](ctx);
+	await fire("message_end");
+	flushTimers();
+	await Promise.resolve();
+	expect(notices.filter((notice) => notice.includes("session is unavailable"))).toHaveLength(4);
+	expect(noticeTypes.every((type) => type === "error")).toBe(true);
+	expect(execCalls).toHaveLength(0);
+});
+
+test("Git spawn failures keep session restore and persistence usable", async () => {
+	gitError = new Error("cannot spawn git");
+	await fire("session_start");
+	expect(noticeTypes.at(-1)).toBe("warning");
+	await commands.urls("pin 4599", ctx);
+	expect(status()).toBe("\uf08d 4599");
+	await shortcuts["super+b"](ctx);
+	expect(opened()).toBe("http://localhost:4599");
+	expect(noticeTypes.at(-1)).toBe("warning");
+	await commands.urls("unpin", ctx);
+	expect(status()).toBe("\uf0ac 4599");
+	await commands.urls("clear", ctx);
+	expect(status()).toBeUndefined();
+	expect(noticeTypes.at(-1)).toBe("warning");
+});
+
+test("unavailable state storage warns while keeping the live URL usable", async () => {
+	await Bun.write(join(agentDir, "url-pin"), "not a directory");
+	await fire("session_start");
+	expect(noticeTypes.at(-1)).toBe("warning");
+	await commands.urls("pin 4599", ctx);
+	expect(noticeTypes.at(-1)).toBe("warning");
+	expect(status()).toBe("\uf08d 4599");
+	await shortcuts["super+b"](ctx);
+	expect(noticeTypes.at(-1)).toBe("warning");
+	expect(opened()).toBe("http://localhost:4599");
+});
+
+test("error reporting falls back to stderr when the session UI is stale", async () => {
+	branchError = new Error("session is unavailable");
+	notifyError = new Error("UI is disposed");
+	const originalError = console.error;
+	const errors: string[] = [];
+	console.error = (message: string) => { errors.push(message); };
+	try {
+		await shortcuts["super+b"](ctx);
+		expect(errors).toHaveLength(1);
+		expect(errors[0]).toContain("session is unavailable");
+		expect(execCalls).toHaveLength(0);
+	} finally {
+		console.error = originalError;
+	}
 });
 
 test("re-reading the branch does not double count", async () => {

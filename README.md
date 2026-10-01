@@ -53,6 +53,14 @@ State lives at `url-pin/state.json` under omp's active agent directory (normally
 
 The file is atomically replaced under a cross-process lock because several omp sessions can update it at once. Storage is bounded to the 100 most recently updated branches and 20 URLs per branch. `/urls unpin` keeps the branch's proven URLs; `/urls clear` removes its complete saved record.
 
+## Browser opening and failures
+
+Opening uses the host's supported `pi.exec()` API and reports through `ctx.ui.notify()`, without importing private browser helpers. macOS uses `/usr/bin/open`, Linux uses `xdg-open`, and Windows uses PowerShell `Start-Process` with an encoded command so URL query characters are not interpreted by `cmd.exe`.
+
+The browser opener runs from the user's home directory, not the session worktree. A removed worktree therefore does not prevent opening its URL; branch persistence can still fail and produces a separate warning.
+
+Spawn errors, nonzero exits, and interrupted openers produce error notifications without saving the failed open. The live ranking and pin remain available for another attempt. Commands, session events, and delayed refresh callbacks contain unexpected failures; if a stale UI cannot display the error, it is written to stderr instead of escaping as an unhandled rejection.
+
 ## Putting the chip in the status line
 
 omp renders extension statuses as their own row under the composer. To get the port as a powerline chip instead — same style as `cost`, immediately after it — put the `status` segment in the status line and turn the standalone row off. Only the `custom` preset honors explicit segment lists, so this is the `default` preset verbatim plus `status`:
@@ -92,4 +100,4 @@ config.keys = {
 bun test
 ```
 
-Covers ranking, origin grouping, schemeless and port-first URL pinning, right-arrow menu pinning, the file-content exclusion, `!bash` ingestion, punctuation trimming, absolute and origin-relative pins, persistence through branch replay and new sessions, branch isolation, clearing, and the empty-session path.
+Covers ranking, origin grouping, schemeless and port-first URL pinning, right-arrow menu pinning, the file-content exclusion, `!bash` ingestion, punctuation trimming, absolute and origin-relative pins, persistence through branch replay and new sessions, branch isolation, clearing, the empty-session path, opener failure/recovery, interrupted opens, picker/session callback failures, unavailable storage, and stale-UI error reporting.
